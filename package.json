@@ -1,0 +1,21 @@
+{
+  "name": "telegram-bot-vercel",
+  "version": "1.0.0",
+  "description": "Telegram Bot deployable on Vercel",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "dev": "nodemon main.js"
+  },
+  "keywords": ["telegram", "bot", "vercel"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.9.0",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@vercel/node": "^5.1.16",
+    "nodemon": "^3.1.10"
+  }
+}
