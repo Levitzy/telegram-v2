@@ -24,6 +24,7 @@
     "user-agents": "^1.1.548"
   },
   "devDependencies": {
+    "@faker-js/faker": "^9.8.0",
     "@vercel/node": "^5.1.16",
     "nodemon": "^3.1.10"
   }
