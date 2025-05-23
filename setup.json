@@ -1,0 +1,20 @@
+{
+  "token": "7947440586:AAGRRYQIPNWdraIWPhw_KOU1o74gS6x5dpY",
+  "prefix": "/",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 5000
+  },
+  "webhook": {
+    "domain": "https://your-app.onrender.com",
+    "endpoint": "/webhook"
+  },
+  "botInfo": {
+    "username": "YourBotUsername",
+    "name": "Your Bot Name"
+  },
+  "settings": {
+    "parse_mode": "HTML",
+    "disable_web_page_preview": true
+  }
+}
