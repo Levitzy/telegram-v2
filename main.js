@@ -17,6 +17,8 @@ app.post(config.webhook.endpoint, async (req, res) => {
     
     if (update.message && update.message.text) {
       await commandHandler(update.message);
+    } else if (update.callback_query) {
+      await commandHandler.handleCallbackQuery(update.callback_query);
     }
     
     res.sendStatus(200);

@@ -2,6 +2,24 @@ const fs = require('fs').promises;
 const path = require('path');
 const config = require('../setup.json');
 
+const activeCallbacks = new Map();
+
+const handleCallbackQuery = async (callbackQuery) => {
+  const callbackData = callbackQuery.data;
+  const callbackHandler = activeCallbacks.get(callbackData);
+  
+  if (callbackHandler) {
+    await callbackHandler(callbackQuery);
+  }
+};
+
+const registerCallback = (callbackId, handler, timeout = 300000) => {
+  activeCallbacks.set(callbackId, handler);
+  setTimeout(() => {
+    activeCallbacks.delete(callbackId);
+  }, timeout);
+};
+
 module.exports = async (message) => {
   if (!message.text || !message.text.startsWith(config.prefix)) return;
 
@@ -22,3 +40,6 @@ module.exports = async (message) => {
     }
   }
 };
+
+module.exports.handleCallbackQuery = handleCallbackQuery;
+module.exports.registerCallback = registerCallback;

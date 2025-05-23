@@ -7,6 +7,8 @@ module.exports = async (callbackQueryId, options = {}) => {
       `https://api.telegram.org/bot${config.token}/answerCallbackQuery`,
       {
         callback_query_id: callbackQueryId,
+        text: options.text || '',
+        show_alert: options.show_alert || false,
         ...options
       }
     );
