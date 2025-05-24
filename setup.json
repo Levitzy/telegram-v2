@@ -6,7 +6,7 @@
     "port": 5000
   },
   "webhook": {
-    "domain": "https://telegram-v2-spgb.onrender.com",
+    "domain": "http://0.0.0.0:5000",
     "endpoint": "/webhook"
   },
   "botInfo": {
