@@ -431,9 +431,10 @@ const attemptRegistrationSubmission = async (session, payload, refererUrl, statu
     const submitEndpoints = [
         BASE_FB_URL + '/reg/submit/',
         BASE_FB_URL + '/signup/account/actor/',
-        refererUrl
+        refererUrl 
     ];
     let submitResponse = null, responseText = '', success = false, checkpoint = false, finalUrl = refererUrl, lastError = null, humanChallenge = false;
+    
     for (const endpoint of submitEndpoints) {
         if (!endpoint || !endpoint.startsWith('http')) continue;
         try {
@@ -455,29 +456,38 @@ const attemptRegistrationSubmission = async (session, payload, refererUrl, statu
             finalUrl = submitResponse.request?.res?.responseUrl || endpoint;
             const currentCookies = await session.defaults.jar.getCookieString(finalUrl);
 
+            success = false;
+            checkpoint = false;
+            humanChallenge = false;
+
             if (responseText.toLowerCase().includes("confirm you're human") || responseText.toLowerCase().includes("confirm that you are not a robot") || finalUrl.includes("/challenge/") || finalUrl.includes("/checkpoint/challenge/") || responseText.toLowerCase().includes("solve this security check") || responseText.toLowerCase().includes("recaptcha") || responseText.toLowerCase().includes("hcaptcha")) {
                 humanChallenge = true;
-                checkpoint = true;
-                success = false;
+                // success and checkpoint remain false for human challenge
             } else if (currentCookies.includes('c_user=') && !currentCookies.includes('c_user=0')) {
-                success = true;
+                success = true; // Direct success
             } else if (responseText.toLowerCase().includes('checkpoint') || responseText.includes('confirmation_code') || responseText.includes('confirmemail.php') || responseText.includes('verifyyouraccount') || responseText.includes('verify your account') || responseText.includes('code sent to your email') || currentCookies.includes('checkpoint=')) {
-                checkpoint = true;
-                success = true;
+                checkpoint = true; // This is an OTP checkpoint
+                success = true;    // Successful first step, needs confirmation
             } else if (responseText.includes('Welcome to Facebook') || responseText.includes('profile.php') || responseText.includes('home.php')) {
                 success = true;
             } else if (submitResponse.status === 302 && submitResponse.headers.location && (submitResponse.headers.location.includes('home.php') || submitResponse.headers.location.includes('profile.php'))) {
                 success = true;
             }
             
-            if (submitResponse.status >= 400 && !checkpoint && !humanChallenge) {
-                success = false;
-                lastError = new Error(`Submission to ${endpoint} failed with status ${submitResponse.status}. Data: ${responseText.substring(0,150)}`);
-            } else if (!humanChallenge) {
-                lastError = null;
+            if (humanChallenge || success) {
+                lastError = null; // Definitive outcome for this endpoint
+                break; 
             }
 
-            if (success || humanChallenge) break;
+            // If not a definitive outcome, it's a failure for this endpoint. Record error.
+            if (submitResponse && submitResponse.status >= 400) {
+                lastError = new Error(`Submission to ${endpoint} failed with status ${submitResponse.status}. Data: ${responseText.substring(0, 150)}`);
+            } else if (submitResponse) { 
+                lastError = new Error(`Submission to ${endpoint} (status ${submitResponse.status}) returned unrecognized content. Data: ${responseText.substring(0, 150)}`);
+            } else { 
+                 lastError = new Error(`Submission attempt to ${endpoint} failed before receiving a response object.`);
+            }
+
         } catch (error) {
             responseText = error.message;
             lastError = error;
@@ -485,11 +495,18 @@ const attemptRegistrationSubmission = async (session, payload, refererUrl, statu
             const proxyRelatedMessages = ['ECONNRESET', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'Decompression failed', 'Parse Error', 'socket hang up', 'HPE_INVALID_CONSTANT', 'ERR_BAD_RESPONSE', 'proxy connect'];
             if (proxyInUse && proxyRelatedMessages.some(msg => (error.code && String(error.code).toUpperCase().includes(msg.toUpperCase())) || (String(error.message).toUpperCase().includes(msg.toUpperCase())) )) {
                 await editMessage(statusMsg.chat.id, statusMsg.message_id, `⚠️ Connection/Proxy issue with ${new URL(endpoint).pathname} (${error.message.substring(0,60)}...). Trying next.`);
-                await navigationDelay(2000, 3000);
+                await navigationDelay(2000, 3000); 
             }
         }
+    } // End of endpoint loop
+
+    if (!success && !humanChallenge) { // If loop finished without success or human challenge
+        if (lastError) {
+            responseText = `Registration submission failed after trying all endpoints. Last error: ${lastError.message.substring(0, 250)}. Last response text (if any): ${responseText.substring(0, 150)}`;
+        } else {
+            responseText = `Registration submission failed after trying all endpoints. No specific error identified, but no success state reached. Last response text: ${responseText.substring(0,150)}`;
+        }
     }
-    if (!success && !humanChallenge && lastError) responseText = `Attempted all submission endpoints. Last error: ${lastError.message.substring(0,250)}`;
     return { response: submitResponse, responseText, success, checkpoint, humanChallenge, finalUrl };
 };
 
@@ -510,22 +527,12 @@ const extractUidAndProfile = async (cookieJar, responseText, finalUrl) => {
     }
     if (uid === "Not available" && responseText) {
         const uidPatterns = [
-            /"USER_ID":"(\d+)"/,
-            /"actorID":"(\d+)"/,
-            /"userID":(\d+)/,
-            /"uid":(\d+),/,
-            /profile_id=(\d+)/,
-            /subject_id=(\d+)/,
-            /viewer_id=(\d+)/,
-            /\\"uid\\":(\d+)/,
-            /\\"user_id\\":\\"(\d+)\\"/,
-            /\\"account_id\\":\\"(\d+)\\"/,
-            /name="target" value="(\d+)"/,
-            /name="id" value="(\d+)"/,
-            /<input type="hidden" name="id" value="(\d+)"/,
-            /\["LWI","setUID","(\d+)"\]/,
-            /"profile_id":(\d+)/,
-            /"ent_id":"(\d+)"/
+            /"USER_ID":"(\d+)"/, /"actorID":"(\d+)"/, /"userID":(\d+)/, /"uid":(\d+),/,
+            /profile_id=(\d+)/, /subject_id=(\d+)/, /viewer_id=(\d+)/, /\\"uid\\":(\d+)/,
+            /\\"user_id\\":\\"(\d+)\\"/, /\\"account_id\\":\\"(\d+)\\"/,
+            /name="target" value="(\d+)"/, /name="id" value="(\d+)"/,
+            /<input type="hidden" name="id" value="(\d+)"/, /\["LWI","setUID","(\d+)"\]/,
+            /"profile_id":(\d+)/, /"ent_id":"(\d+)"/
         ];
         for (const pattern of uidPatterns) {
             const match = responseText.match(pattern);
@@ -574,7 +581,7 @@ const sendCredentialsMessage = async (chatId, email, password, uid, profileUrl, 
     const inlineKeyboard = [];
     
     if ((outcome.type === "checkpoint_manual_needed" || outcome.type === "success_initial_otp_failed") && tempEmailDataForButton && tempEmailDataForButton.sessionId) {
-        const retryCallbackData = `retry_otp_${tempEmailDataForButton.sessionId}_${email}_${accountNum}_${originalUserId}`;
+        const retryCallbackData = `retry_otp_${tempEmailDataForButton.sessionId}_${email.replace(/[^a-zA-Z0-9]/g, '')}_${accountNum}_${originalUserId}`;
         inlineKeyboard.push([
             {
                 text: '🔄 Retry OTP Fetch',
@@ -589,14 +596,12 @@ const sendCredentialsMessage = async (chatId, email, password, uid, profileUrl, 
             }
             
             await answerCallbackQuery(callbackQuery.id, { text: 'Retrying OTP fetch...' });
-            
             const otpPollingStatusMsg = await sendMessage(chatId, `⏳ Starting OTP retry for account ${accountNum} (\`${email}\`)...`);
             
             try {
                 const otp = await fetchOtpFromTempEmail(tempEmailDataForButton.sessionId, otpPollingStatusMsg, email);
-                
-                let updatedMessageText = messageText.replace(outcome.title, `✅ Account Creation Success (OTP Fetched on Retry)!`);
-                updatedMessageText = updatedMessageText.replace(outcome.message, `Account should be ready. **OTP Code: \`${otp}\`**\nUse with email \`${email}\`. UID might appear after confirmation or login.`);
+                let updatedMessageText = callbackQuery.message.text.replace(/<b>.*?<\/b>/, `<b>Account ${accountNum}/${totalAccounts}: ✅ Account Creation Success (OTP Fetched on Retry)!</b>`);
+                updatedMessageText = updatedMessageText.replace(/Initial registration submitted\. Failed to fetch OTP.*?manually for confirmation code\./s, `Account should be ready. **OTP Code: \`${otp}\`**\nUse with email \`${email}\`. UID might appear after confirmation or login.`);
                 
                 if (!updatedMessageText.includes('🔑 <b>OTP Code:</b>')) {
                     updatedMessageText = updatedMessageText.replace('📨 <b>Temp Email Provider:</b>', `🔑 <b>OTP Code:</b> <code>${otp}</code>\n📨 <b>Temp Email Provider:</b>`);
@@ -604,13 +609,13 @@ const sendCredentialsMessage = async (chatId, email, password, uid, profileUrl, 
                     updatedMessageText = updatedMessageText.replace(/🔑 <b>OTP Code:<\/b> <code>.*?<\/code>/, `🔑 <b>OTP Code:</b> <code>${otp}</code>`);
                 }
                 
-                await editMessage(chatId, callbackQuery.message.message_id, updatedMessageText);
+                await editMessage(chatId, callbackQuery.message.message_id, updatedMessageText, {parse_mode: 'HTML', reply_markup: callbackQuery.message.reply_markup});
                 await editMessage(chatId, otpPollingStatusMsg.message_id, `✅ OTP \`${otp}\` fetched for acc ${accountNum} on retry! Original message updated.`);
             } catch (otpRetryError) {
-                let failedMessageText = messageText.replace(outcome.title, `📬 Manual Confirmation (Retry Failed)!`);
-                failedMessageText = failedMessageText.replace(outcome.message, `Failed to fetch OTP for \`${email}\` on retry: ${otpRetryError.message.substring(0,150)}.\nCheck email manually.`);
+                let failedMessageText = callbackQuery.message.text.replace(/<b>.*?<\/b>/, `<b>Account ${accountNum}/${totalAccounts}: 📬 Manual Confirmation (Retry Failed)!</b>`);
+                failedMessageText = failedMessageText.replace(/Initial registration submitted\. Failed to fetch OTP.*?manually for confirmation code\./s, `Failed to fetch OTP for \`${email}\` on retry: ${otpRetryError.message.substring(0,150)}.\nCheck email manually.`);
                 
-                await editMessage(chatId, callbackQuery.message.message_id, failedMessageText);
+                await editMessage(chatId, callbackQuery.message.message_id, failedMessageText, {parse_mode: 'HTML', reply_markup: callbackQuery.message.reply_markup});
                 await editMessage(chatId, otpPollingStatusMsg.message_id, `❌ OTP fetch retry failed for acc ${accountNum}. Original message updated.`);
             } finally {
                 setTimeout(() => deleteMessage(chatId, otpPollingStatusMsg.message_id).catch(() => {}), 10000);
@@ -619,16 +624,10 @@ const sendCredentialsMessage = async (chatId, email, password, uid, profileUrl, 
     }
     
     if (profileUrl && profileUrl.startsWith("https://") && profileUrl !== "Profile URL not found or confirmation pending.") {
-        if (inlineKeyboard.length > 0) {
-            inlineKeyboard[0].push({
-                text: '👤 View Profile',
-                url: profileUrl
-            });
-        } else {
-            inlineKeyboard.push([{
-                text: '👤 View Profile',
-                url: profileUrl
-            }]);
+        if (inlineKeyboard.length > 0 && inlineKeyboard[0].length < 2) { // Add to existing row if space
+            inlineKeyboard[0].push({ text: '👤 View Profile', url: profileUrl });
+        } else { // New row
+            inlineKeyboard.push([{ text: '👤 View Profile', url: profileUrl }]);
         }
     }
     
@@ -654,6 +653,7 @@ async function createSingleFacebookAccount(chatId, originalUserId, effectiveProx
     let sessionForProxyCheck;
     let tempEmailProviderActual = 'N/A';
     const userAgentString = userAgentDataToUse.toString();
+    let session; // Declare session here to access in finally or catch if needed for cookie extraction attempts
 
     const initialStatusContent = `⏳ Initializing FB Account ${accountNum}/${totalAccounts}${providerForEmail !== "random" ? ` (Provider: ${providerForEmail})` : ''}${effectiveProxyString ? ' with proxy: `' + effectiveProxyString + '`' : ''}... (UA: ${userAgentString.substring(0,40)}...)`;
     statusMsg = await sendMessage(chatId, initialStatusContent);
@@ -663,55 +663,81 @@ async function createSingleFacebookAccount(chatId, originalUserId, effectiveProx
         tempEmailData = await fetchTemporaryEmail(statusMsg, providerForEmail);
         const emailToUse = tempEmailData.email;
         tempEmailProviderActual = tempEmailData.providerName;
-        const session = createAxiosSession(userAgentDataToUse, effectiveProxyString);
-        sessionForProxyCheck = session;
+        
+        session = createAxiosSession(userAgentDataToUse, effectiveProxyString);
+        sessionForProxyCheck = session; 
+        
         let proxyStatusMessage = effectiveProxyString ? (session.defaults.proxy ? `Proxy \`${effectiveProxyString}\` active.` : `Proxy "${effectiveProxyString}" invalid. No proxy.`) : 'No proxy.';
         await editMessage(chatId, statusMsg.message_id, `🔧 Account ${accountNum}/${totalAccounts}: ${proxyStatusMessage}\n👤 User-Agent: \`${userAgentString.substring(0, 75)}...\`\n📧 Temp email: \`${emailToUse}\` (Provider: ${tempEmailProviderActual})`);
+        
         await navigationDelay();
         const initialNavResponse = await performInitialNavigation(session, statusMsg);
         await shortInteractionDelay();
+        
         const initialReferer = initialNavResponse?.request?.res?.responseUrl || BASE_FB_URL + '/';
         const { formData, responseDataHtml, responseUrl } = await fetchRegistrationPageAndData(session, statusMsg, initialReferer);
         if (!formData || !formData.fb_dtsg || !formData.jazoest || !formData.lsd) throw new Error('Failed to extract critical form data (fb_dtsg, jazoest, lsd).');
+        
         await shortInteractionDelay();
         const randomDay = Math.floor(Math.random() * 28) + 1;
         const randomMonth = Math.floor(Math.random() * 12) + 1;
         const currentYear = new Date().getFullYear();
         const randomYear = currentYear - (Math.floor(Math.random() * (50 - 18 + 1)) + 18);
         const gender = Math.random() > 0.5 ? '1' : '2';
+        
         const payload = prepareSubmissionPayload(formData, emailToUse, genPassword, genName, { day: randomDay, month: randomMonth, year: randomYear }, gender, responseDataHtml);
         let submissionResult = await attemptRegistrationSubmission(session, payload, responseUrl, statusMsg, !!(effectiveProxyString && session.defaults.proxy));
+        
         let { uid, profileUrl } = await extractUidAndProfile(session.defaults.jar, submissionResult.responseText, submissionResult.finalUrl);
         let outcome;
 
         if (submissionResult.humanChallenge) {
             outcome = { type: "human_challenge", title: "🛡️ Human Verification Required!", color: 0xFF8C00, message: `Account ${accountNum} hit a "Confirm you're human" or CAPTCHA page. Manual intervention needed. UID may not be available.` };
-        } else if (!submissionResult.success && !submissionResult.checkpoint) {
+        } else if (submissionResult.success) {
+            if (submissionResult.checkpoint) { // Success but needs OTP
+                await editMessage(statusMsg.chat.id, statusMsg.message_id, `📬 Account ${accountNum}/${totalAccounts}: Initial submission OK/Checkpoint. Attempting OTP fetch for \`${emailToUse}\`...`);
+                try {
+                    const otp = await fetchOtpFromTempEmail(tempEmailData.sessionId, statusMsg, emailToUse);
+                    outcome = { type: "success_otp_fetched", otp: otp, title: "✅ Account Created Successfully (OTP Verified)!", color: 0x00FF00, message: `New Facebook account ready! **OTP Code: \`${otp}\`**. Use with email \`${emailToUse}\`. UID may appear after login.` };
+                    // Try to extract UID again after potential OTP confirmation flow
+                    const { uid: postOtpUid, profileUrl: postOtpProfileUrl } = await extractUidAndProfile(session.defaults.jar, submissionResult.responseText, submissionResult.finalUrl);
+                    if (postOtpUid !== "Not available" && postOtpUid !== "0") uid = postOtpUid;
+                    if (postOtpProfileUrl.startsWith("https://")) profileUrl = postOtpProfileUrl;
+                } catch (otpError) {
+                    outcome = { type: "checkpoint_manual_needed", title: "📬 Manual Confirmation Needed (OTP Fetch Failed)!", color: 0xFFA500, message: `Initial registration submitted. Failed to fetch OTP for \`${emailToUse}\`: ${otpError.message.substring(0, 120)}.\nCheck email \`${emailToUse}\` manually for confirmation code.` };
+                }
+            } else { // Direct success, no checkpoint
+                outcome = { type: "success_direct", title: "✅ Account Created Successfully (Direct)!", color: 0x00FF00, message: `New Facebook account ready! UID may appear after login.` };
+            }
+        } else { // Not humanChallenge, not success -> must be a failure
             let errorDetail = "Facebook rejected registration or unknown error.";
             if (submissionResult.responseText) {
                 const $$= cheerio.load(submissionResult.responseText);
-                errorDetail =$$('#reg_error_inner').text().trim() || $$('div[role="alert"]').text().trim() || $$('._585n, ._585r, ._ajax_error_payload').first().text().trim() || (submissionResult.responseText.length < 300 ? submissionResult.responseText : submissionResult.responseText.substring(0, 300) + "...");
-                if (!errorDetail || errorDetail.length < 10) errorDetail = "FB response unclear or structure changed.";
+                const errorTextCandidates = [
+                    $$('#reg_error_inner').text().trim(),
+                    $$('div[role="alert"]').text().trim(),
+                    $$('._585n, ._585r, ._ajax_error_payload').first().text().trim(),
+                    $$('.uimessage[data-type="error"] .message').text().trim(),
+                    $$('div[data-sigil="error-message"]').text().trim()
+                ];
+                errorDetail = errorTextCandidates.find(text => text && text.length > 5) || (submissionResult.responseText.length < 300 ? submissionResult.responseText : submissionResult.responseText.substring(0, 300) + "...");
+                if (!errorDetail || errorDetail.length < 10 || errorDetail.toLowerCase().includes('try again later') || errorDetail.toLowerCase().includes('something went wrong')) {
+                    errorDetail = `FB response unclear or structure changed. Status: ${submissionResult.response ? submissionResult.response.status : 'N/A'}. Preview: ${(submissionResult.responseText || '').substring(0,100)}`;
+                }
             }
             outcome = { type: "failure", title: "❌ Account Creation Failed!", color: 0xFF0000, message: `**Reason:** ${errorDetail}` };
-        } else {
-            await editMessage(chatId, statusMsg.message_id, `📬 Account ${accountNum}/${totalAccounts}: Initial submission OK/Checkpoint. Attempting OTP fetch for \`${emailToUse}\`...`);
-            try {
-                const otp = await fetchOtpFromTempEmail(tempEmailData.sessionId, statusMsg, emailToUse);
-                outcome = { type: "success_otp_fetched", otp: otp, title: "✅ Account Created Successfully (OTP Verified)!", color: 0x00FF00, message: `New Facebook account ready! **OTP Code: \`${otp}\`**. Use with email \`${emailToUse}\`. UID may appear after login.` };
-            } catch (otpError) {
-                outcome = { type: "checkpoint_manual_needed", title: "📬 Manual Confirmation Needed (OTP Fetch Failed)!", color: 0xFFA500, message: `Initial registration submitted. Failed to fetch OTP for \`${emailToUse}\`: ${otpError.message.substring(0, 120)}.\nCheck email \`${emailToUse}\` manually for confirmation code.` };
-            }
         }
+        
         await sendCredentialsMessage(chatId, emailToUse, genPassword, uid, profileUrl, genName, tempEmailProviderActual, outcome, effectiveProxyString && sessionForProxyCheck && sessionForProxyCheck.defaults.proxy ? effectiveProxyString : null, accountNum, totalAccounts, tempEmailData, originalUserId);
         if (statusMsg) await deleteMessage(chatId, statusMsg.message_id).catch(e => {});
         return outcome;
+
     } catch (error) {
         let errorMessage = error.message || "Unexpected critical error.";
         const actualProxyInUse = effectiveProxyString && sessionForProxyCheck && sessionForProxyCheck.defaults.proxy;
         const proxyRelatedErrorCodes = ['ECONNRESET', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED'];
         const proxyRelatedErrorMessages = ['proxy connect', 'proxy authentication required', 'decompression failed', 'parse error', 'socket hang up', 'hpe_invalid_constant', 'err_bad_response'];
-        const isProxyRelatedNetworkError = actualProxyInUse && ((error.code && proxyRelatedErrorCodes.some(code => String(error.code).toUpperCase().includes(code))) || (proxyRelatedErrorMessages.some(msg => String(error.message).toLowerCase().includes(msg))));
+        
         if (isProxyRelatedNetworkError) {
             errorMessage = `A connection/proxy error (\`${error.code || 'N/A'}\`) with proxy \`${effectiveProxyString}\`: ${error.message}\n\n⚠️ **Proxy issue.** Verify proxy details & stability.`;
         } else if (error.message && (error.message.toLowerCase().includes("not available on this browser") || error.message.toLowerCase().includes("update your browser"))) {
@@ -723,10 +749,21 @@ async function createSingleFacebookAccount(chatId, originalUserId, effectiveProx
             if (error.response.data) errorMessage += ` | Response: ${String(error.response.data).substring(0, 150).replace(/\n/g, ' ')}`;
         }
         errorMessage += `\n(User-Agent: ${userAgentString || "Not set"})`;
+        
         const criticalFailureOutcome = { type: "critical_failure", title: "💥 Critical Error During Creation!", color: 0xFF0000, message: `${errorMessage.substring(0, 1900)}` };
-        await sendCredentialsMessage(chatId, tempEmailData ? tempEmailData.email : "N/A", genPassword, "N/A", "N/A", genName, tempEmailProviderActual, criticalFailureOutcome, actualProxyInUse ? effectiveProxyString : null, accountNum, totalAccounts, tempEmailData, originalUserId);
+        // Attempt to extract UID even on critical failure if session exists
+        let uidOnError = "N/A", profileUrlOnError = "N/A";
+        if (session && session.defaults && session.defaults.jar) {
+            try {
+                const errorExtraction = await extractUidAndProfile(session.defaults.jar, error.response ? String(error.response.data) : '', '');
+                uidOnError = errorExtraction.uid;
+                profileUrlOnError = errorExtraction.profileUrl;
+            } catch (e) { /* ignore extraction error here */ }
+        }
+
+        await sendCredentialsMessage(chatId, tempEmailData ? tempEmailData.email : "N/A", genPassword, uidOnError, profileUrlOnError, genName, tempEmailProviderActual, criticalFailureOutcome, actualProxyInUse ? effectiveProxyString : null, accountNum, totalAccounts, tempEmailData, originalUserId);
         if (statusMsg) await deleteMessage(chatId, statusMsg.message_id).catch(e => {});
-        throw error;
+        throw error; 
     }
 }
 
@@ -736,7 +773,7 @@ module.exports = {
     execute: async (message, args) => {
         const chatId = message.chat.id;
         const userId = message.from.id.toString();
-        let initialReplyMessage;
+        let initialReplyMessageId = null;
         
         try {
             let amountAccounts = 1;
@@ -768,7 +805,9 @@ module.exports = {
             const providerInfo = providerName !== "random" ? ` (Provider: ${providerName})` : ' (Provider: random)';
             const initialReplyText = `🚀 Starting Ultra-Stealth creation process for ${amountAccounts} Facebook account(s)${providerInfo}. This may take some time...`;
             
-            initialReplyMessage = await sendMessage(chatId, initialReplyText);
+            const initialReplySent = await sendMessage(chatId, initialReplyText);
+            if(initialReplySent) initialReplyMessageId = initialReplySent.message_id;
+
 
             const accountCreationPromises = [];
             for (let i = 1; i <= amountAccounts; i++) {
@@ -777,31 +816,53 @@ module.exports = {
                     createSingleFacebookAccount(chatId, userId, proxyString, userAgentDataForThisAccount, i, amountAccounts, providerName)
                 );
                 if (i < amountAccounts) {
-                    await navigationDelay(1000, 3000);
+                    await navigationDelay(2000, 4000); // Slightly increased delay between starting creations
                 }
             }
 
             const results = await Promise.allSettled(accountCreationPromises);
             let successCount = 0;
             let failureCount = 0;
+            let checkpointCount = 0;
+            let humanChallengeCount = 0;
+
             results.forEach(result => {
                 if (result.status === 'fulfilled') {
                     const outcome = result.value;
-                    if (outcome && typeof outcome.type === 'string' && outcome.type === "success_otp_fetched") {
-                        successCount++;
-                    } else {
+                    if (outcome && typeof outcome.type === 'string') {
+                        if (outcome.type === "success_otp_fetched" || outcome.type === "success_direct") {
+                            successCount++;
+                        } else if (outcome.type === "checkpoint_manual_needed" || outcome.type === "success_initial_otp_failed") {
+                            checkpointCount++;
+                        } else if (outcome.type === "human_challenge") {
+                            humanChallengeCount++;
+                        } else { // failure or critical_failure (though critical_failure would be a rejection)
+                            failureCount++;
+                        }
+                    } else { // Should not happen if createSingleFacebookAccount always returns a valid outcome object
                         failureCount++;
                     }
-                } else {
+                } else { // Rejected promise from createSingleFacebookAccount (critical_failure)
                     failureCount++;
                 }
             });
             
-            await sendMessage(chatId, `🏁 Ultra-Stealth batch creation finished. Attempts: ${amountAccounts}, OTP Verified Successes: ${successCount}, Checkpoints/Failures: ${failureCount}. Check individual messages.`);
+            let summaryMessage = `🏁 Ultra-Stealth batch creation finished.\n`;
+            summaryMessage += `Attempts: ${amountAccounts}\n`;
+            summaryMessage += `✅ OTP Verified/Direct Successes: ${successCount}\n`;
+            summaryMessage += `🛡️ Human Challenges: ${humanChallengeCount}\n`;
+            summaryMessage += `📬 OTP/Manual Checkpoints: ${checkpointCount}\n`;
+            summaryMessage += `❌ Failures/Critical Errors: ${failureCount}\n\n`;
+            summaryMessage += `Check individual messages above for details on each account.`;
 
-        } catch (error) {
+            await sendMessage(chatId, summaryMessage);
+            if (initialReplyMessageId) await deleteMessage(chatId, initialReplyMessageId).catch(()=>{});
+
+
+        } catch (error) { // This catch is for errors in 'execute' itself (e.g., arg parsing, initial sendMessage)
             try {
-                await sendMessage(chatId, `🚨 An unexpected critical error occurred with fbcreate. Details: ${error.message}.`);
+                await sendMessage(chatId, `🚨 An unexpected critical error occurred with the fbcreate command. Details: ${error.message}.`);
+                if (initialReplyMessageId) await deleteMessage(chatId, initialReplyMessageId).catch(()=>{});
             } catch (e_panic) {}
         }
     }
